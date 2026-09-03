@@ -22,6 +22,9 @@
 - `exit`: Exits the application.
 - `help`: Displays the list of available commands.
 
+## Requirements
+- Operating system: Windows
+
 ## Installation
 
 1. Clone the repository
