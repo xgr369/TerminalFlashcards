@@ -40,3 +40,8 @@ int dir_exists(const char *path) {
     struct stat status;
     return stat(path, &status) == 0 && (status.st_mode & S_IFDIR) != 0;
 }
+
+int file_exists(const char *path) {
+    struct stat status;
+    return stat(path, &status) == 0 && (status.st_mode & S_IFREG) == 0;
+}

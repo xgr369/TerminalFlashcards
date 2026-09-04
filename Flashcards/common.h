@@ -8,5 +8,6 @@
 char *read_line(void);
 int print_file(FILE *file);
 int dir_exists(const char *path);
+int file_exists(const char *path);
 
 #endif // !COMMON_H
