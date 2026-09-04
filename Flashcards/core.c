@@ -130,14 +130,14 @@ static int app_get_due_files(AppState *s, sqlite3 *db, List *files) {
 		strcpy(path_copy, path);
 
 		if (file_exists(path_copy)) {
-			printf("debug--found due file: %s\n", path_copy);
+			debug("found due file: %s\n", path_copy);
 			if (list_push(files, &path_copy)) {
 				free(path_copy);
 				result = APP_ERR_INTERNAL;
 				goto app_get_due_files_cleanup_stmt;
 			}
 		} else {
-			printf("debug--found delete file: %s\n", path_copy);
+			debug("found delete file: %s\n", path_copy);
 			if (list_push(&unused_files, &path_copy)) {
 				free(path_copy);
 				result = APP_ERR_INTERNAL;
@@ -302,7 +302,7 @@ static int app_sync_scheduler_entries(AppState *s, sqlite3 *db) {
 		}
 		for (size_t i = 0; i < file_count; i++) {
 			char *path = files[i];
-			printf("debug--ensure entry exists: %s\n", path);
+			debug("ensure entry exists: %s\n", path);
 			sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int64(stmt, 2, 0);
 			sqlite3_bind_int64(stmt, 3, 0);
@@ -445,14 +445,19 @@ static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
 	return 0;
 }
 
-static int app_prompt_grade(sqlite3 *db, const char *path) {
+static int app_prompt_grade(sqlite3 *db, const char *path, int *stop) {
 	printf("Grade 1-4: ");
 	for (;;) {
 		const char *line = read_line();
 		if (!line) {
 			return APP_ERR_INTERNAL;
 		}
-		if (strlen(line) == 1 && line[0] >= '1' && line[0] <= '4') {
+		int len = strlen(line);
+		if (len == 0) {
+			*stop = 1;
+			break;
+		}
+		if (len == 1 && line[0] >= '1' && line[0] <= '4') {
 			int grade = line[0] - '1';
 			free(line);
 			if (app_update_scheduler_entry(db, path, grade)) {
@@ -535,9 +540,13 @@ int app_study(AppState *s) {
 			}
 			list_clear(&answers, BUFFER_LIST_CAPACITY);
 
-			result = app_prompt_grade(db, path);
+			int stop = 0;
+			result = app_prompt_grade(db, path, &stop);
 			if (result) {
 				goto app_study_cleanup_due_files;
+			}
+			if (stop) {
+				break;
 			}
 
 			list_removen(&due_files, index, 1);
