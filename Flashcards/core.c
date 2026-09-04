@@ -2,6 +2,7 @@
 #include "core.h"
 #include "common.h"
 #include "list.h"
+#include "sqlite3.h"
 #include <direct.h>
 #include <errno.h>
 #include <io.h>
@@ -9,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define MAX_PATH 256
 #define BUFFER_LIST_CAPACITY 2
@@ -80,7 +82,8 @@ static int app_collect_files(const char *dir, char ***files, size_t *count) {
 	return 0;
 }
 
-static void app_evaluate_answer(const char *line, List *plist) {
+static int app_evaluate_answer(const char *line, List *plist) {
+	int correct = 1;
 	char *p = line;
 	int i = 0;
 	for (;;) {
@@ -101,6 +104,7 @@ static void app_evaluate_answer(const char *line, List *plist) {
 			printf("Correct!\n");
 		} else {
 			printf("Wrong.\n");
+			correct = 0;
 		}
 		i++;
 		if (i >= plist->length) {
@@ -114,6 +118,106 @@ static void app_evaluate_answer(const char *line, List *plist) {
 	if (i < plist->length) {
 		printf(plist->length - i == 1 ? "Missing answer.\n" : "Missing answers.\n");
 	}
+	return correct;
+}
+
+static int app_get_due_files(sqlite3 *db, List *files) {
+	sqlite3_stmt *stmt;
+	if (list_init(files, sizeof(char *), BUFFER_LIST_CAPACITY)) {
+		return APP_ERR_INTERNAL;
+	}
+	if (sqlite3_prepare_v2(db, "SELECT path FROM scheduler WHERE due_date <= ?;", -1, &stmt, NULL) != SQLITE_OK) {
+		return APP_ERR_INTERNAL;
+	}
+	sqlite3_bind_int64(stmt, 1, (sqlite3_int64)time(NULL));
+	int step_result;
+	while ((step_result = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *path = (const char *)sqlite3_column_text(stmt, 0);
+		if (!path) {
+			continue;
+		}
+		char *path_copy = malloc(strlen(path) + 1);
+		if (!path_copy) {
+			sqlite3_finalize(stmt);
+			for (size_t i = 0; i < files->length; i++) {
+				free(*(char **)list_at(files, i));
+			}
+			list_free(files);
+			return APP_ERR_INTERNAL;
+		}
+		strcpy(path_copy, path);
+		printf("debug--due file: %s\n", path_copy);
+		if (list_push(files, &path_copy)) {
+			free(path_copy);
+			sqlite3_finalize(stmt);
+			for (size_t i = 0; i < files->length; i++) {
+				free(*(char **)list_at(files, i));
+			}
+			list_free(files);
+			return APP_ERR_INTERNAL;
+		}
+	}
+	if (step_result != SQLITE_DONE) {
+		sqlite3_finalize(stmt);
+		for (size_t i = 0; i < files->length; i++) {
+			free(*(char **)list_at(files, i));
+		}
+		list_free(files);
+		return APP_ERR_INTERNAL;
+	}
+	sqlite3_finalize(stmt);
+	return 0;
+}
+
+static char *app_parse_path(AppState *s, const char *path) {
+	size_t root_len = strlen(s->path);
+	size_t path_len = strlen(path);
+
+	char *real_path = malloc(root_len + 1 + path_len + 1);
+	if (!real_path) {
+		return APP_ERR_INTERNAL;
+	}
+	char *p = real_path;
+	memcpy(p, s->path, root_len);
+	p += root_len;
+	*p++ = '/';
+	const char *start = path;
+	while (*start) {
+		while (*start == '/' || *start == '\\') {
+			start++;
+		}
+		if (!*start) {
+			break;
+		}
+		const char *end = start;
+		while (*end && *end != '/' && *end != '\\') {
+			end++;
+		}
+		size_t len = (size_t)(end - start);
+		if (str_eq_len_lit(start, len, "..")) {
+			if (p > real_path + sizeof(BASE_PATH) - 1) {
+				p--;
+				while (p > real_path + sizeof(BASE_PATH) && p[-1] != '/') {
+					p--;
+				}
+			}
+		} else if (!str_eq_len_lit(start, len, ".")) {
+			memcpy(p, start, len);
+			p += len;
+			*p++ = '/';
+		}
+		start = end;
+	}
+	if (p > real_path + sizeof(BASE_PATH) - 1) {
+		p--;
+	}
+	*p++ = '\0';
+	char *new_real_path = realloc(real_path, p - real_path);
+	if (!new_real_path) {
+		free(real_path);
+		return APP_ERR_INTERNAL;
+	}
+	return new_real_path;
 }
 
 static void app_print_cloze(FILE *file, List *plist) {
@@ -174,6 +278,53 @@ static void app_print_dir_recursive(const char *path, int depth) {
 	_findclose(handle);
 }
 
+static int app_register_scheduler_entries(AppState *s, sqlite3 *db) {
+	// Collect files
+	char **files = NULL;
+	size_t file_count = 0;
+	int result = app_collect_files(s->path, &files, &file_count);
+	if (result) {
+		return result;
+	}
+	if (file_count) {
+		// Ensure each file has an entry in the database
+		sqlite3_stmt *stmt;
+		if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS scheduler (path TEXT PRIMARY KEY, due_date INTEGER NOT NULL, r REAL NOT NULL, s REAL NOT NULL, d REAL NOT NULL);", NULL, NULL, NULL) != SQLITE_OK) {
+			result = APP_ERR_INTERNAL;
+			goto app_register_scheduler_entries_cleanup;
+		}
+		if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO scheduler (path, due_date, r, s, d) VALUES (?, ?, ?, ?, ?);", -1, &stmt, NULL) != SQLITE_OK) {
+			result = APP_ERR_INTERNAL;
+			goto app_register_scheduler_entries_cleanup;
+		}
+		for (size_t i = 0; i < file_count; i++) {
+			char *path = files[i];
+			printf("debug--ensure entry exists: %s\n", path);
+			sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int64(stmt, 2, 0);
+			sqlite3_bind_int64(stmt, 3, 0);
+			sqlite3_bind_int64(stmt, 4, 0);
+			sqlite3_bind_int64(stmt, 5, 0);
+			if (sqlite3_step(stmt) != SQLITE_DONE) {
+				sqlite3_finalize(stmt);
+				result = APP_ERR_INTERNAL;
+				goto app_register_scheduler_entries_cleanup;
+			}
+			sqlite3_reset(stmt);
+			sqlite3_clear_bindings(stmt);
+		}
+		sqlite3_finalize(stmt);
+	}
+
+	// Free collected files
+app_register_scheduler_entries_cleanup:
+	for (size_t i = 0; i < file_count; i++) {
+		free(files[i]);
+	}
+	free(files);
+	return result;
+}
+
 int app_add(AppState *s, const char *content) {
 	char path[MAX_PATH];
 	do {
@@ -188,57 +339,6 @@ int app_add(AppState *s, const char *content) {
 	return 0;
 }
 
-static char *app_parse_path(AppState *s, const char *path) {
-	size_t root_len = strlen(s->path);
-	size_t path_len = strlen(path);
-
-	char *real_path = malloc(root_len + 1 + path_len + 1);
-	if (!real_path) {
-		return APP_ERR_INTERNAL;
-	}
-	char *p = real_path;
-	memcpy(p, s->path, root_len);
-	p += root_len;
-	*p++ = '/';
-	const char *start = path;
-	while (*start) {
-		while (*start == '/' || *start == '\\') {
-			start++;
-		}
-		if (!*start) {
-			break;
-		}
-		const char *end = start;
-		while (*end && *end != '/' && *end != '\\') {
-			end++;
-		}
-		size_t len = (size_t)(end - start);
-		if (str_eq_len_lit(start, len, "..")) {
-			if (p > real_path + sizeof(BASE_PATH) - 1) {
-				p--;
-				while (p > real_path + sizeof(BASE_PATH) && p[-1] != '/') {
-					p--;
-				}
-			}
-		} else if (!str_eq_len_lit(start, len, ".")) {
-			memcpy(p, start, len);
-			p += len;
-			*p++ = '/';
-		}
-		start = end;
-	}
-	if (p > real_path + sizeof(BASE_PATH) - 1) {
-		p--;
-	}
-	*p++ = '\0';
-	char *new_real_path = realloc(real_path, p - real_path);
-	if (!new_real_path) {
-		free(real_path);
-		return APP_ERR_INTERNAL;
-	}
-	return new_real_path;
-}
-
 int app_cd(AppState *s, const char *path) {
 	char *real_path = app_parse_path(s, path);
 	if (!dir_exists(real_path)) {
@@ -250,19 +350,6 @@ int app_cd(AppState *s, const char *path) {
 	}
 	s->path = real_path;
 	return 0;
-	/*if (path[0] == '\0') {
-		s->path = BASE_PATH;
-		return 0;
-	}
-	char *new_path = malloc(sizeof(BASE_PATH) + strlen(path) + 1);
-	if (!new_path) {
-		return 1;
-	}
-	strcpy(new_path, BASE_PATH);
-	new_path[sizeof(BASE_PATH) - 1] = '/';
-	strcpy(new_path + sizeof(BASE_PATH), path);
-	s->path = new_path;
-	return 0;*/
 }
 
 int app_create(AppState *s, const char *path) {
@@ -318,7 +405,7 @@ int app_ls(AppState *s) {
 		strcat(path, "\\");
 		strcat(path, data.name);
 		if ((data.attrib & _A_SUBDIR)) {
-			printf("%s\n", data.name);
+			printf("%s/\n", data.name);
 		} else {
 			FILE *file = fopen(path, "r");
 			printf("Q: ");
@@ -329,28 +416,71 @@ int app_ls(AppState *s) {
 	return 0;
 }
 
+// Currently, just a simple scheduler
+static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
+	sqlite3_stmt *stmt;
+	if (sqlite3_prepare_v2(db, "UPDATE scheduler SET due_date = ? WHERE path = ?;", -1, &stmt, NULL ) != SQLITE_OK) {
+		return APP_ERR_INTERNAL;
+	}
+	int interval = 0;
+	if (grade) {
+		interval = 120;
+	}
+	sqlite3_bind_int64(stmt, 1, time(NULL) + interval);
+	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		sqlite3_finalize(stmt);
+		return APP_ERR_INTERNAL;
+	}
+	sqlite3_finalize(stmt);
+	return 0;
+}
+
 // How study works:
+// Collect all flashcards
+// Ensure all flashcards have entries in SQL database
+// Retrieve due flashcards
 // Given a question: "The mitochondria is the [powerhouse] of the [cell]."
 // Output question: "The mitochondria is the [?] of the [?]."
 // Answer: powerhouse, cell (each answer split by comma, trimmed for whitespace)
 // Verify answer.
 int app_study(AppState *s) {
-	char **files = NULL;
-	size_t file_count = 0;
-	int result = app_collect_files(s->path, &files, &file_count);
+	// Open SQL
+	sqlite3 *db;
+	if (sqlite3_open("scheduler.db", &db) != SQLITE_OK) {
+		return APP_ERR_INTERNAL;
+	}
+
+	// Register SQL entries
+	int result = app_register_scheduler_entries(s, db);
 	if (result) {
-		return result;
+		goto app_study_cleanup_db;
 	}
-	if (file_count == 0) {
-		free(files);
-		return 0;
-	}
-	List answers; // List<char *>
-	if (list_init(&answers, sizeof(char *), BUFFER_LIST_CAPACITY)) {
+
+	// Get due files
+	List due_files; // List<char *>
+	if (list_init(&due_files, sizeof(char *), BUFFER_LIST_CAPACITY)) {
 		result = APP_ERR_INTERNAL;
+		goto app_study_cleanup_db;
+	}
+	result = app_get_due_files(db, &due_files);
+	if (result) {
+		goto app_study_cleanup_due_files;
+	}
+
+	// Begin studying
+	if (due_files.length == 0) {
+		printf("You are all caught up for now.\n");
 	} else {
-		for (;;) {
-			char *path = files[rand() % file_count];
+		List answers; // List<char *>
+		if (list_init(&answers, sizeof(char *), BUFFER_LIST_CAPACITY)) {
+			result = APP_ERR_INTERNAL;
+			goto app_study_cleanup_due_files;
+		}
+
+		while (due_files.length) {
+			int index = rand() % due_files.length;
+			char *path = *(char **)list_at(&due_files, index);
 			FILE *file = fopen(path, "r");
 			if (!file) {
 				result = APP_ERR_INTERNAL;
@@ -358,38 +488,49 @@ int app_study(AppState *s) {
 			}
 			printf("Q: ");
 			app_print_cloze(file, &answers);
-			/*for (int i = 0; i < answers.length; i++) {
-				char *answer;
-				list_get(&answers, i, &answer);
-				printf("%s, ", answer);
-			}
-			putchar('\n');*/ // debug -- show the answers
 			printf("A: ");
 			char *line = read_line();
 			if (line == NULL) {
+				fclose(file);
 				result = APP_ERR_INTERNAL;
 				break;
 			}
 			if (line[0] == '\0') {
+				fclose(file);
 				free(line);
 				break;
 			}
-			app_evaluate_answer(line, &answers);
+			int grade = app_evaluate_answer(line, &answers);
 			free(line);
 			fclose(file);
-			for (int i = 0; i < answers.length; i++) {
-				char *answer;
-				list_get(&answers, i, &answer);
-				free(answer);
+			for (size_t i = 0; i < answers.length; i++) {
+				free(*(char **)list_at(&answers, i));
 			}
 			list_clear(&answers, BUFFER_LIST_CAPACITY);
+
+			// Update scheduler entry
+			if (app_update_scheduler_entry(db, path, grade)) {
+				result = APP_ERR_INTERNAL;
+				break;
+			}
+
+			// Remove flashcard
+			list_removen(&due_files, index, 1);
 		}
+		list_free(&answers);
 	}
-	list_free(&answers);
-	for (size_t i = 0; i < file_count; i++) {
-		free(files[i]);
+
+	// Free due files
+app_study_cleanup_due_files:
+	for (size_t i = 0; i < due_files.length; i++) {
+		free(*(char **)list_at(&due_files, i));
 	}
-	free(files);
+	list_free(&due_files);
+
+	// Close SQL
+app_study_cleanup_db:
+	sqlite3_close(db);
+
 	return result;
 }
 
