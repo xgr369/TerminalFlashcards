@@ -1,96 +1,96 @@
 #include "list.h"
 #include <string.h>
 
-static int list_resize(List *pv, size_t size) {
-	pv->size = size;
-	void *ptr = realloc(pv->data, pv->size * pv->elemSize);
+static int list_resize(List *pl, size_t size) {
+	pl->size = size;
+	void *ptr = realloc(pl->data, pl->size * pl->elemSize);
 	if (!ptr)
 		return 1;
-	pv->data = ptr;
+	pl->data = ptr;
 	return 0;
 }
 
-int list_init(List *pv, size_t elemSize, size_t size) {
-	if (!pv || elemSize == 0)
+int list_init(List *pl, size_t elemSize, size_t size) {
+	if (!pl || elemSize == 0)
 		return 1;
-	pv->data = malloc(size * elemSize);
-	if (!pv->data)
+	pl->data = malloc(size * elemSize);
+	if (!pl->data)
 		return 1;
-	pv->length = 0;
-	pv->size = size;
-	pv->elemSize = elemSize;
+	pl->length = 0;
+	pl->size = size;
+	pl->elemSize = elemSize;
 	return 0;
 }
 
-int list_clear(List *pv, size_t size) {
-	if (!pv)
+int list_clear(List *pl, size_t size) {
+	if (!pl)
 		return 1;
-	if (list_resize(pv, size))
+	if (list_resize(pl, size))
 		return 1;
-	pv->length = 0;
+	pl->length = 0;
 	return 0;
 }
 
-int list_free(List *pv) {
-	if (!pv || !pv->data)
+int list_free(List *pl) {
+	if (!pl || !pl->data)
 		return 1;
-	free(pv->data);
-	pv->data = NULL;
+	free(pl->data);
+	pl->data = NULL;
 	return 0;
 }
 
-void *list_at(List *pv, size_t index) {
-	if (!pv || index < 0 || index >= pv->length)
+void *list_at(List *pl, size_t index) {
+	if (!pl || index < 0 || index >= pl->length)
 		return NULL;
-	return pv->data + pv->elemSize * index;
+	return pl->data + pl->elemSize * index;
 }
 
-int list_get(List *pv, size_t index, void *dst) {
-	if (!pv || !dst || index < 0 || index >= pv->length)
+int list_get(List *pl, size_t index, void *dst) {
+	if (!pl || !dst || index < 0 || index >= pl->length)
 		return 1;
-	memcpy(dst, pv->data + index * pv->elemSize, pv->elemSize);
+	memcpy(dst, pl->data + index * pl->elemSize, pl->elemSize);
 	return 0;
 }
 
-int list_pop(List *pv, void *dst) {
-	if (!pv || pv->length == 0)
+int list_pop(List *pl, void *dst) {
+	if (!pl || pl->length == 0)
 		return 1;
 	if (dst)
-		memcpy(dst, pv->data + (pv->length - 1) * pv->elemSize, pv->elemSize);
-	pv->length--;
+		memcpy(dst, pl->data + (pl->length - 1) * pl->elemSize, pl->elemSize);
+	pl->length--;
 	return 0;
 }
 
-int list_popn(List *pv, size_t n) {
-	if (!pv || n < 0 || pv->length < n)
+int list_popn(List *pl, size_t n) {
+	if (!pl || n < 0 || pl->length < n)
 		return 1;
-	pv->length -= n;
+	pl->length -= n;
 	return 0;
 }
 
-int list_push(List *pv, const void *src) {
-	if (!pv || !src)
+int list_push(List *pl, const void *src) {
+	if (!pl || !src)
 		return 1;
-	if (pv->length * pv->elemSize >= pv->size)
-		if (list_resize(pv, pv->size ? pv->size * 2 : 1))
+	if (pl->length * pl->elemSize >= pl->size)
+		if (list_resize(pl, pl->size ? pl->size * 2 : 1))
 			return 1;
-	memcpy(pv->data + pv->length * pv->elemSize, src, pv->elemSize);
-	pv->length++;
+	memcpy(pl->data + pl->length * pl->elemSize, src, pl->elemSize);
+	pl->length++;
 	return 0;
 }
 
-int list_removen(List *pv, size_t index, size_t n) {
-	if (!pv || index > pv->length || n > pv->length - index)
+int list_removen(List *pl, size_t index, size_t n) {
+	if (!pl || index > pl->length || n > pl->length - index)
 		return 1;
-	size_t tailSize = pv->length - index - n;
-	memmove(pv->data + index * pv->elemSize, pv->data + (index + n) * pv->elemSize, tailSize * pv->elemSize);
-	pv->length -= n;
+	size_t tailSize = pl->length - index - n;
+	memmove(pl->data + index * pl->elemSize, pl->data + (index + n) * pl->elemSize, tailSize * pl->elemSize);
+	pl->length -= n;
 	return 0;
 }
 
-int list_set(List *pv, size_t index, void *src) {
-	if (!pv || !src || index >= pv->length)
+int list_set(List *pl, size_t index, void *src) {
+	if (!pl || !src || index >= pl->length)
 		return 1;
-	memcpy(pv->data + index * pv->elemSize, src, pv->elemSize);
+	memcpy(pl->data + index * pl->elemSize, src, pl->elemSize);
 	return 0;
 }
