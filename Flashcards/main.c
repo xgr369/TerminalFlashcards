@@ -4,17 +4,17 @@
 #include "core.h"
 #include "common.h"
 
-#define str_equals(str, l) (strncmp((str), (l), sizeof(l) - 1) == 0)
+#define check_command(str, l) (((str)[sizeof(l) - 1] == '\0' || (str)[sizeof(l) - 1] == ' ') && strncmp((str), (l), sizeof(l) - 1) == 0)
 #define get_argument(str, l) ((str)[sizeof(l) - 1] == '\0' ? NULL : (str) + sizeof(l))
 
 int exec_line(AppState *s, char *line) {
     if (line[0] == '\0') {
         return 0;
 	}
-    if (str_equals(line, "exit")) {
+    if (check_command(line, "exit")) {
         return 1;
     }
-    if (str_equals(line, "help")) {
+    if (check_command(line, "help")) {
         printf("Available commands:\n");
         printf("%-14s%s\n", "add", "Adds a flashcard to the current set.");
         printf("%-14s%s\n", "cd", "Changes the current set.");
@@ -23,17 +23,20 @@ int exec_line(AppState *s, char *line) {
         printf("%-14s%s\n", "study", "Begins flashcard study.");
         printf("%-14s%s\n", "tree", "Lists the sets.");
         printf("%-14s%s\n", "exit", "Quits the program.");
-	} else if (str_equals(line, "cd")) {
+	} else if (check_command(line, "cd")) {
         char *arg = get_argument(line, "cd");
         if (!arg) {
             goto exec_line_err_noarg;
         }
-        if (app_cd(s, arg)) {
+        int result = app_cd(s, arg);
+        if (result == 1) {
             goto exec_line_err_internal;
+        } else if (result == 2) {
+            goto exec_line_err_dir_notfound;
         }
-    } else if (str_equals(line, "ls")) {
+    } else if (check_command(line, "ls")) {
         app_ls(s);
-    } else if (str_equals(line, "add")) {
+    } else if (check_command(line, "add")) {
         char *arg = get_argument(line, "add");
         if (!arg) {
             goto exec_line_err_noarg;
@@ -41,11 +44,11 @@ int exec_line(AppState *s, char *line) {
         if (app_add(s, arg)) {
             goto exec_line_err_internal;
         }
-    } else if (str_equals(line, "study")) {
+    } else if (check_command(line, "study")) {
         if (app_study(s)) {
             goto exec_line_err_internal;
         }
-    } else if (str_equals(line, "mkdir")) {
+    } else if (check_command(line, "mkdir")) {
         char *arg = get_argument(line, "mkdir");
         if (!arg) {
             goto exec_line_err_noarg;
@@ -54,7 +57,7 @@ int exec_line(AppState *s, char *line) {
             goto exec_line_err_internal;
         }
         printf("Created set '%s'.\n", arg);
-    } else if (str_equals(line, "tree")) {
+    } else if (check_command(line, "tree")) {
         app_tree(s->path);
     } else {
         printf("Unrecognized command: %s\n", line);
@@ -63,6 +66,9 @@ int exec_line(AppState *s, char *line) {
 exec_line_err_noarg:
     printf("Missing argument for command '%s'\n", line);
 	return 0;
+exec_line_err_dir_notfound:
+    printf("Directory not found.\n");
+    return 0;
 exec_line_err_internal:
     printf("Internal error.\n");
     return 0;
