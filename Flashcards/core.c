@@ -11,11 +11,13 @@
 #include <sys/stat.h>
 
 #define MAX_PATH 256
-#define BASE_PATH "flashcards"
 #define BUFFER_LIST_CAPACITY 2
+#define APP_ERR_INTERNAL 1
+#define APP_ERR_DIR_NOTFOUND 2
+static const char BASE_PATH[] = "flashcards";
 
 // Compares if the string is equal to the specified span
-static int streqspan(const char *str, const char *start, size_t n) {
+static int str_eq_span(const char *str, const char *start, size_t n) {
 	char *p1 = str, *p2 = start;
 	while (*p1) {
 		if (p1 - str >= n) {
@@ -31,6 +33,51 @@ static int streqspan(const char *str, const char *start, size_t n) {
 		return 0;
 	}
 	return 1;
+}
+
+static int app_collect_files(const char *dir, char ***files, size_t *count) {
+	struct _finddata_t data;
+	char pattern[MAX_PATH];
+	char path[MAX_PATH];
+
+	strcpy(pattern, dir);
+	strcat(pattern, "\\*");
+	intptr_t handle = _findfirst(pattern, &data);
+	if (handle == -1) {
+		return APP_ERR_INTERNAL;
+	}
+	do {
+		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
+			continue;
+		}
+		strcpy(path, dir);
+		strcat(path, "\\");
+		strcat(path, data.name);
+		if (data.attrib & _A_SUBDIR) {
+			if (app_collect_files(path, files, count)) {
+				_findclose(handle);
+				return APP_ERR_INTERNAL;
+			}
+		} else {
+			char *file = malloc(strlen(path) + 1);
+			if (!file) {
+				_findclose(handle);
+				return APP_ERR_INTERNAL;
+			}
+			strcpy(file, path);
+			char **new_files = realloc(*files, (*count + 1) * sizeof(char *));
+			if (!new_files) {
+				free(file);
+				_findclose(handle);
+				return APP_ERR_INTERNAL;
+			}
+			*files = new_files;
+			(*files)[*count] = file;
+			(*count)++;
+		}
+	} while (_findnext(handle, &data) == 0);
+	_findclose(handle);
+	return 0;
 }
 
 static void app_evaluate_answer(const char *line, List *plist) {
@@ -50,7 +97,7 @@ static void app_evaluate_answer(const char *line, List *plist) {
 		}
 		char *answer;
 		list_get(plist, i, &answer);
-		if (streqspan(answer, start, n)) {
+		if (str_eq_span(answer, start, n)) {
 			printf("Correct!\n");
 		} else {
 			printf("Wrong.\n");
@@ -109,8 +156,7 @@ static void app_print_dir_recursive(const char *path, int depth) {
 		return;
 	}
 	do {
-		if (strcmp(data.name, ".") == 0 ||
-			strcmp(data.name, "..") == 0) {
+		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
 			continue;
 		}
 		if (!(data.attrib & _A_SUBDIR)) {
@@ -135,16 +181,76 @@ int app_add(AppState *s, const char *content) {
 	} while (_access(path, 0) == 0);
 	FILE *file = fopen(path, "w");
 	if (!file) {
-		return -1;
+		return APP_ERR_INTERNAL;
 	}
 	fputs(content, file);
 	fclose(file);
 	return 0;
 }
 
-// todo: actually navigate while parsing the path
+static char *app_parse_path(AppState *s, const char *path) {
+	size_t root_len = strlen(s->path);
+	size_t path_len = strlen(path);
+
+	char *real_path = malloc(root_len + 1 + path_len + 1);
+	if (!real_path) {
+		return APP_ERR_INTERNAL;
+	}
+	char *p = real_path;
+	memcpy(p, s->path, root_len);
+	p += root_len;
+	*p++ = '/';
+	const char *start = path;
+	while (*start) {
+		while (*start == '/' || *start == '\\') {
+			start++;
+		}
+		if (!*start) {
+			break;
+		}
+		const char *end = start;
+		while (*end && *end != '/' && *end != '\\') {
+			end++;
+		}
+		size_t len = (size_t)(end - start);
+		if (str_eq_len_lit(start, len, "..")) {
+			if (p > real_path + sizeof(BASE_PATH) - 1) {
+				p--;
+				while (p > real_path + sizeof(BASE_PATH) && p[-1] != '/') {
+					p--;
+				}
+			}
+		} else if (!str_eq_len_lit(start, len, ".")) {
+			memcpy(p, start, len);
+			p += len;
+			*p++ = '/';
+		}
+		start = end;
+	}
+	if (p > real_path + sizeof(BASE_PATH) - 1) {
+		p--;
+	}
+	*p++ = '\0';
+	char *new_real_path = realloc(real_path, p - real_path);
+	if (!new_real_path) {
+		free(real_path);
+		return APP_ERR_INTERNAL;
+	}
+	return new_real_path;
+}
+
 int app_cd(AppState *s, const char *path) {
-	if (path[0] == '\0') {
+	char *real_path = app_parse_path(s, path);
+	if (!dir_exists(real_path)) {
+		free(real_path);
+		return APP_ERR_DIR_NOTFOUND;
+	}
+	if (s->path != BASE_PATH) {
+		free(s->path);
+	}
+	s->path = real_path;
+	return 0;
+	/*if (path[0] == '\0') {
 		s->path = BASE_PATH;
 		return 0;
 	}
@@ -156,40 +262,40 @@ int app_cd(AppState *s, const char *path) {
 	new_path[sizeof(BASE_PATH) - 1] = '/';
 	strcpy(new_path + sizeof(BASE_PATH), path);
 	s->path = new_path;
-	return 0;
+	return 0;*/
 }
 
-int app_create(AppState *s, const char *name) {
-	if (!name) {
+int app_create(AppState *s, const char *path) {
+	if (!path) {
 		return 0;
 	}
 	size_t root_len = strlen(s->path);
-	size_t name_len = strlen(name);
-	char *path = malloc(root_len + 1 + name_len + 1);
-	if (!path) {
-		return -1;
+	size_t path_len = strlen(path);
+	char *real_path = malloc(root_len + 1 + path_len + 1);
+	if (!real_path) {
+		return APP_ERR_INTERNAL;
 	}
-	memcpy(path, s->path, root_len);
-	path[root_len] = '/';
-	memcpy(path + root_len + 1, name, name_len);
-	path[root_len + 1 + name_len] = '\0';
-	for (char *p = path; *p; p++) {
+	memcpy(real_path, s->path, root_len);
+	real_path[root_len] = '/';
+	memcpy(real_path + root_len + 1, path, path_len);
+	real_path[root_len + 1 + path_len] = '\0';
+	for (char *p = real_path; *p; p++) {
 		if (*p != '/' && *p != '\\') {
 			continue;
 		}
 		char separator = *p;
 		*p = '\0';
-		if (*path && _mkdir(path) != 0 && errno != EEXIST) {
-			free(path);
-			return -1;
+		if (*real_path && _mkdir(real_path) != 0 && errno != EEXIST) {
+			free(real_path);
+			return APP_ERR_INTERNAL;
 		}
 		*p = separator;
 	}
-	if (_mkdir(path) != 0 && errno != EEXIST) {
-		free(path);
-		return -1;
+	if (_mkdir(real_path) != 0 && errno != EEXIST) {
+		free(real_path);
+		return APP_ERR_INTERNAL;
 	}
-	free(path);
+	free(real_path);
 	return 0;
 }
 
@@ -202,7 +308,7 @@ int app_ls(AppState *s) {
 	strcat(pattern, "\\*");
 	intptr_t handle = _findfirst(pattern, &data);
 	if (handle == -1) {
-		return 0;
+		return APP_ERR_INTERNAL;
 	}
 	do {
 		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
@@ -211,57 +317,15 @@ int app_ls(AppState *s) {
 		strcpy(path, s->path);
 		strcat(path, "\\");
 		strcat(path, data.name);
-		if (!(data.attrib & _A_SUBDIR)) {
+		if ((data.attrib & _A_SUBDIR)) {
+			printf("%s\n", data.name);
+		} else {
 			FILE *file = fopen(path, "r");
 			printf("Q: ");
 			print_file(file);
 			fclose(file);
 		}
 	} while (_findnext(handle, &data) == 0);
-}
-
-static int collect_files(const char *dir, char ***files, size_t *count) {
-	struct _finddata_t data;
-	char pattern[MAX_PATH];
-	char path[MAX_PATH];
-
-	strcpy(pattern, dir);
-	strcat(pattern, "\\*");
-	intptr_t handle = _findfirst(pattern, &data);
-	if (handle == -1) {
-		return 0;
-	}
-	do {
-		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
-			continue;
-		}
-		strcpy(path, dir);
-		strcat(path, "\\");
-		strcat(path, data.name);
-		if (data.attrib & _A_SUBDIR) {
-			if (collect_files(path, files, count)) {
-				_findclose(handle);
-				return 1;
-			}
-		} else {
-			char *file = malloc(strlen(path) + 1);
-			if (!file) {
-				_findclose(handle);
-				return 1;
-			}
-			strcpy(file, path);
-			char **new_files = realloc(*files, (*count + 1) * sizeof(char *));
-			if (!new_files) {
-				free(file);
-				_findclose(handle);
-				return 1;
-			}
-			*files = new_files;
-			(*files)[*count] = file;
-			(*count)++;
-		}
-	} while (_findnext(handle, &data) == 0);
-	_findclose(handle);
 	return 0;
 }
 
@@ -273,23 +337,23 @@ static int collect_files(const char *dir, char ***files, size_t *count) {
 int app_study(AppState *s) {
 	char **files = NULL;
 	size_t file_count = 0;
-	if (collect_files(s->path, &files, &file_count)) {
-		return 1;
+	int result = app_collect_files(s->path, &files, &file_count);
+	if (result) {
+		return result;
 	}
 	if (file_count == 0) {
 		free(files);
 		return 0;
 	}
-	int result = 0;
 	List answers; // List<char *>
 	if (list_init(&answers, sizeof(char *), BUFFER_LIST_CAPACITY)) {
-		result = 1;
+		result = APP_ERR_INTERNAL;
 	} else {
 		for (;;) {
 			char *path = files[rand() % file_count];
 			FILE *file = fopen(path, "r");
 			if (!file) {
-				result = 1;
+				result = APP_ERR_INTERNAL;
 				break;
 			}
 			printf("Q: ");
@@ -303,7 +367,7 @@ int app_study(AppState *s) {
 			printf("A: ");
 			char *line = read_line();
 			if (line == NULL) {
-				result = 1;
+				result = APP_ERR_INTERNAL;
 				break;
 			}
 			if (line[0] == '\0') {
