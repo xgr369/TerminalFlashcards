@@ -19,7 +19,7 @@ int exec_line(AppState *s, char *line) {
         printf("%-14s%s\n", "add", "Adds a flashcard to the current set.");
         printf("%-14s%s\n", "cd", "Changes the current set.");
         printf("%-14s%s\n", "ls", "Lists the flashcards in the current set.");
-        printf("%-14s%s\n", "mkdir", "Creates a set.");
+        printf("%-14s%s\n", "create", "Creates a set.");
         printf("%-14s%s\n", "study", "Begins flashcard study.");
         printf("%-14s%s\n", "tree", "Lists the sets.");
         printf("%-14s%s\n", "exit", "Quits the program.");
@@ -48,8 +48,8 @@ int exec_line(AppState *s, char *line) {
         if (app_study(s)) {
             goto exec_line_err_internal;
         }
-    } else if (check_command(line, "mkdir")) {
-        char *arg = get_argument(line, "mkdir");
+    } else if (check_command(line, "create")) {
+        char *arg = get_argument(line, "create");
         if (!arg) {
             goto exec_line_err_noarg;
         }

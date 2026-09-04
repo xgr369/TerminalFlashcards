@@ -16,7 +16,7 @@
 - `add <content>`: Adds a flashcard with the specified content to the current set.
 - `cd <set>`: Changes the current set to the specified one.
 - `ls`: Lists all flashcards in the current set.
-- `mkdir <set>`: Creates a new flashcard set.
+- `create <set>`: Creates a new flashcard set.
 - `study`: Starts the study mode for the current set.
 - `tree`: Displays the directory tree of all flashcard sets.
 - `exit`: Exits the application.
