@@ -3,7 +3,10 @@
 
 #include <stdio.h>
 
+#define str_eq_len_lit(str, len, l) ((len) == sizeof(l) - 1 && strncmp((str), (l), sizeof(l) - 1) == 0)
+
 char *read_line(void);
 int print_file(FILE *file);
+int dir_exists(const char *path);
 
 #endif // !COMMON_H

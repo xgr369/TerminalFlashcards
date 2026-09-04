@@ -32,3 +32,11 @@ int print_file(FILE *file) {
     }
     putchar('\n');
 }
+
+#include <io.h> 
+#include <sys/types.h>
+#include <sys/stat.h>   
+int dir_exists(const char *path) {
+    struct stat status;
+    return stat(path, &status) == 0 && (status.st_mode & S_IFDIR) != 0;
+}
