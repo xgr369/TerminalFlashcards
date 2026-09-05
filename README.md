@@ -7,7 +7,7 @@
 - Flashcards
   - Add flashcards to sets
 - Studying
-  - Practice flashcards interactively
+  - Practice flashcards interactively, using the FSRS (Free Spaced Repetition Scheduler) algorithm
 - View directory tree
   - Display the hierarchical structure of flashcard sets
 

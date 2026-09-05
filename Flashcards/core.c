@@ -2,6 +2,7 @@
 #include "core.h"
 #include "common.h"
 #include "list.h"
+#include "fsrs.h"
 #include "sqlite3.h"
 #include <direct.h>
 #include <errno.h>
@@ -18,25 +19,6 @@
 #define APP_ERR_INTERNAL 1
 #define APP_ERR_DIR_NOTFOUND 2
 static const char BASE_PATH[] = "flashcards";
-
-// Compares if the string is equal to the specified span
-static int str_eq_span(const char *str, const char *start, size_t n) {
-	const char *p1 = str, *p2 = start;
-	while (*p1) {
-		if (p1 - str >= n) {
-			return 0;
-		}
-		if (*p1 != *p2) {
-			return 0;
-		}
-		p1++;
-		p2++;
-	}
-	if (p1 - str < n) {
-		return 0;
-	}
-	return 1;
-}
 
 static int app_collect_files(const char *dir, char ***files, size_t *count) {
 	struct _finddata_t data;
@@ -281,6 +263,32 @@ static void app_print_dir_recursive(const char *path, int depth) {
 	_findclose(handle);
 }
 
+static int app_prompt_grade(sqlite3 *db, const char *path, int *stop) {
+	printf("Grade 1-4: ");
+	for (;;) {
+		const char *line = read_line();
+		if (!line) {
+			return APP_ERR_INTERNAL;
+		}
+		int len = strlen(line);
+		if (len == 0) {
+			*stop = 1;
+			break;
+		}
+		if (len == 1 && line[0] >= '1' && line[0] <= '4') {
+			int grade = line[0] - '1';
+			free(line);
+			if (app_update_scheduler_entry(db, path, grade)) {
+				return APP_ERR_INTERNAL;
+			}
+			break;
+		}
+		free(line);
+		printf("Please enter a number between 1 and 4: ");
+	}
+	return 0;
+}
+
 static int app_sync_scheduler_entries(AppState *s, sqlite3 *db) {
 	// Collect files
 	char **files = NULL;
@@ -291,12 +299,12 @@ static int app_sync_scheduler_entries(AppState *s, sqlite3 *db) {
 	}
 	if (file_count) {
 		// Ensure each file has an entry in the database
-		if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS scheduler (path TEXT PRIMARY KEY, due_date INTEGER NOT NULL, r REAL NOT NULL, s REAL NOT NULL, d REAL NOT NULL);", NULL, NULL, NULL) != SQLITE_OK) {
+		if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS scheduler (path TEXT PRIMARY KEY, last_date INTEGER NOT NULL, due_date INTEGER NOT NULL, r REAL NOT NULL, s REAL NOT NULL, d REAL NOT NULL);", NULL, NULL, NULL) != SQLITE_OK) {
 			result = APP_ERR_INTERNAL;
 			goto app_sync_scheduler_entries_cleanup_files;
 		}
 		sqlite3_stmt *stmt;
-		if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO scheduler (path, due_date, r, s, d) VALUES (?, ?, ?, ?, ?);", -1, &stmt, NULL) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO scheduler (path, last_date, due_date, r, s, d) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmt, NULL) != SQLITE_OK) {
 			result = APP_ERR_INTERNAL;
 			goto app_sync_scheduler_entries_cleanup_files;
 		}
@@ -308,6 +316,7 @@ static int app_sync_scheduler_entries(AppState *s, sqlite3 *db) {
 			sqlite3_bind_int64(stmt, 3, 0);
 			sqlite3_bind_int64(stmt, 4, 0);
 			sqlite3_bind_int64(stmt, 5, 0);
+			sqlite3_bind_int64(stmt, 6, 0);
 			if (sqlite3_step(stmt) != SQLITE_DONE) {
 				result = APP_ERR_INTERNAL;
 				goto app_sync_scheduler_entries_cleanup_stmt;
@@ -326,6 +335,62 @@ app_sync_scheduler_entries_cleanup_files:
 	}
 	free(files);
 	return result;
+}
+
+static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
+	sqlite3_stmt *stmt;
+
+	// Load values
+	sqlite3_int64 now = (sqlite3_int64)time(NULL);
+	sqlite3_int64 last_date;
+	double r, s, d;
+	if (sqlite3_prepare_v2(db, "SELECT last_date, r, s, d FROM scheduler;", -1, &stmt, NULL) != SQLITE_OK) {
+		return APP_ERR_INTERNAL;
+	}
+	int step_result = sqlite3_step(stmt);
+	if (step_result == SQLITE_ROW) {
+		last_date = sqlite3_column_int64(stmt, 0);
+		r = sqlite3_column_double(stmt, 1);
+		s = sqlite3_column_double(stmt, 2);
+		d = sqlite3_column_double(stmt, 3);
+	} else {
+		sqlite3_finalize(stmt);
+		return APP_ERR_INTERNAL;
+	}
+	sqlite3_finalize(stmt);
+
+	// Perform calculations
+	double t = (double)(now - last_date) / 86400.0;
+	double nr, ns, nd;
+	nr = fsrs_retrievability(t, s);
+	if (s == 0.0) {
+		ns = fsrs_s_0(grade);
+	} else {
+		ns = fsrs_stability(r, s, d, grade);
+	}
+	if (d == 0.0) {
+		nd = fsrs_d_0(grade);
+	} else {
+		nd = fsrs_difficulty(d, grade);
+	}
+	sqlite3_int64 interval = (sqlite3_int64)fsrs_interval(nr, ns);
+
+	// Update values
+	if (sqlite3_prepare_v2(db, "UPDATE scheduler SET last_date = ?, due_date = ?, r = ?, s = ?, d = ? WHERE path = ?;", -1, &stmt, NULL ) != SQLITE_OK) {
+		return APP_ERR_INTERNAL;
+	}
+	sqlite3_bind_int64(stmt, 1, now);
+	sqlite3_bind_int64(stmt, 2, now + interval);
+	sqlite3_bind_double(stmt, 3, nr);
+	sqlite3_bind_double(stmt, 4, ns);
+	sqlite3_bind_double(stmt, 5, nd);
+	sqlite3_bind_text(stmt, 6, path, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		sqlite3_finalize(stmt);
+		return APP_ERR_INTERNAL;
+	}
+	sqlite3_finalize(stmt);
+	return 0;
 }
 
 int app_add(AppState *s, const char *content) {
@@ -419,66 +484,14 @@ int app_ls(AppState *s) {
 	return 0;
 }
 
-// Currently, just a simple scheduler
-static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
-	sqlite3_stmt *stmt;
-	if (sqlite3_prepare_v2(db, "UPDATE scheduler SET due_date = ? WHERE path = ?;", -1, &stmt, NULL ) != SQLITE_OK) {
-		return APP_ERR_INTERNAL;
-	}
-	int interval;
-	if (grade == 0) {
-		interval = 0;
-	} else if (grade == 1) {
-		interval = 60;
-	} else if (grade == 2) {
-		interval = 120;
-	} else {
-		interval = 240;
-	}
-	sqlite3_bind_int64(stmt, 1, time(NULL) + interval);
-	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		sqlite3_finalize(stmt);
-		return APP_ERR_INTERNAL;
-	}
-	sqlite3_finalize(stmt);
-	return 0;
-}
-
-static int app_prompt_grade(sqlite3 *db, const char *path, int *stop) {
-	printf("Grade 1-4: ");
-	for (;;) {
-		const char *line = read_line();
-		if (!line) {
-			return APP_ERR_INTERNAL;
-		}
-		int len = strlen(line);
-		if (len == 0) {
-			*stop = 1;
-			break;
-		}
-		if (len == 1 && line[0] >= '1' && line[0] <= '4') {
-			int grade = line[0] - '1';
-			free(line);
-			if (app_update_scheduler_entry(db, path, grade)) {
-				return APP_ERR_INTERNAL;
-			}
-			break;
-		}
-		free(line);
-		printf("Please enter a number between 1 and 4: ");
-	}
-	return 0;
-}
-
 // How study works:
 // Collect all flashcards
 // Ensure all flashcards have entries in SQL database
 // Retrieve due flashcards
 // Given a question: "The mitochondria is the [powerhouse] of the [cell]."
 // Output question: "The mitochondria is the [?] of the [?]."
-// Answer: powerhouse, cell (each answer split by comma, trimmed for whitespace)
-// Verify answer.
+// Output answer: powerhouse, cell
+// Ask for difficulty grade.
 int app_study(AppState *s) {
 	// Open SQL
 	sqlite3 *db;
