@@ -232,7 +232,7 @@ static void app_print_cloze(FILE *file, List *plist) {
 	}
 }
 
-static void app_print_dir_recursive(const char *path, int depth) {
+static void app_print_dir_recursive(const char *path, int depth, int *last) {
 	struct _finddata_t data;
 	char pattern[MAX_PATH];
 	char child_path[MAX_PATH];
@@ -244,6 +244,15 @@ static void app_print_dir_recursive(const char *path, int depth) {
 	if (handle == -1) {
 		return;
 	}
+	int entries = 0;
+	do {
+		if (strcmp(data.name, ".") && strcmp(data.name, "..")) {
+		entries++;
+		}
+	} while (_findnext(handle, &data) == 0);
+	_findclose(handle);
+	handle = _findfirst(pattern, &data);
+	int index = 0;
 	do {
 		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
 			continue;
@@ -251,14 +260,16 @@ static void app_print_dir_recursive(const char *path, int depth) {
 		if (!(data.attrib & _A_SUBDIR)) {
 			continue;
 		}
+		int is_last = ++index == entries;
 		for (int i = 0; i < depth; i++) {
-			printf("©¦   ");
+			printf(last[i] ? "    " : "©¦   ");
 		}
-		printf("©¸©¤©¤ %s\n", data.name);
+		printf("%s©¤©¤ %s\n", is_last ? "©¸" : "©À", data.name);
 		strcpy(child_path, path);
 		strcat(child_path, "\\");
 		strcat(child_path, data.name);
-		app_print_dir_recursive(child_path, depth + 1);
+		last[depth] = is_last;
+		app_print_dir_recursive(child_path, depth + 1, last);
 	} while (_findnext(handle, &data) == 0);
 	_findclose(handle);
 }
@@ -582,8 +593,8 @@ app_study_cleanup_db:
 }
 
 void app_tree(const char *path) {
-	printf("%s\n", path);
-	app_print_dir_recursive(path, 0);
+	int last[MAX_PATH] = { 0 };
+	app_print_dir_recursive(path, 0, last);
 }
 
 int app_init(AppState *s) {
