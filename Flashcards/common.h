@@ -17,4 +17,4 @@ int print_file(FILE *file);
 int dir_exists(const char *path);
 int file_exists(const char *path);
 
-#endif // !COMMON_H
+#endif // COMMON_H
