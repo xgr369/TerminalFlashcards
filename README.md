@@ -17,7 +17,7 @@
 - `cd <set>`: Changes the current set to the specified one.
 - `ls`: Lists all flashcards in the current set.
 - `create <set>`: Creates a new flashcard set.
-- `study`: Starts the study mode for the current set.
+- `study`: Starts the study mode for the current set and all subsets.
 - `tree`: Displays the directory tree of all flashcard sets.
 - `exit`: Exits the application.
 - `help`: Displays the list of available commands.
