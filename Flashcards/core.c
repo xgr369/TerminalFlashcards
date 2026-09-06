@@ -373,18 +373,22 @@ static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
 	// Perform calculations
 	double t = (double)(now - last_date) / 86400.0;
 	double nr, ns, nd;
-	nr = fsrs_retrievability(t, s);
+	if (s == 0.0) {
+		nr = 1.0;
+	} else {
+		nr = fsrs_retrievability(t, s);
+	}
 	if (s == 0.0) {
 		ns = fsrs_s_0(grade);
 	} else {
-		ns = fsrs_stability(r, s, d, grade);
+		ns = fsrs_stability(nr, s, d, grade);
 	}
 	if (d == 0.0) {
 		nd = fsrs_d_0(grade);
 	} else {
 		nd = fsrs_difficulty(d, grade);
 	}
-	sqlite3_int64 interval = (sqlite3_int64)fsrs_interval(nr, ns);
+	double interval = fsrs_interval(0.9, ns);
 
 	// Update values
 	if (sqlite3_prepare_v2(db, "UPDATE scheduler SET last_date = ?, due_date = ?, r = ?, s = ?, d = ? WHERE path = ?;", -1, &stmt, NULL ) != SQLITE_OK) {
