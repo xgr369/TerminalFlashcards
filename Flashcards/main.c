@@ -29,13 +29,18 @@ int exec_line(AppState *s, char *line) {
             goto exec_line_err_noarg;
         }
         int result = app_cd(s, arg);
-        if (result == 1) {
+        if (result == APP_ERR_INTERNAL) {
             goto exec_line_err_internal;
-        } else if (result == 2) {
+        } else if (result == APP_ERR_DIR_NOTFOUND) {
             goto exec_line_err_dir_notfound;
         }
     } else if (check_command(line, "ls")) {
-        app_ls(s);
+        int result = app_ls(s);
+        if (result == APP_ERR_INTERNAL) {
+            goto exec_line_err_internal;
+        } else if (result == APP_ERR_DIR_NOTFOUND) {
+            goto exec_line_err_dir_notfound;
+        }
     } else if (check_command(line, "add")) {
         char *arg = get_argument(line, "add");
         if (!arg) {
