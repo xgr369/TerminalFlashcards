@@ -16,8 +16,6 @@
 
 #define MAX_PATH 256
 #define BUFFER_LIST_CAPACITY 2
-#define APP_ERR_INTERNAL 1
-#define APP_ERR_DIR_NOTFOUND 2
 static const char BASE_PATH[] = "flashcards";
 
 static int app_collect_files(const char *dir, char ***files, size_t *count) {
@@ -355,9 +353,10 @@ static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
 	sqlite3_int64 now = (sqlite3_int64)time(NULL);
 	sqlite3_int64 last_date;
 	double r, s, d;
-	if (sqlite3_prepare_v2(db, "SELECT last_date, r, s, d FROM scheduler;", -1, &stmt, NULL) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, "SELECT last_date, r, s, d FROM scheduler WHERE path = ?;", -1, &stmt, NULL) != SQLITE_OK) {
 		return APP_ERR_INTERNAL;
 	}
+	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	int step_result = sqlite3_step(stmt);
 	if (step_result == SQLITE_ROW) {
 		last_date = sqlite3_column_int64(stmt, 0);
@@ -371,31 +370,26 @@ static int app_update_scheduler_entry(sqlite3 *db, char *path, int grade) {
 	sqlite3_finalize(stmt);
 
 	// Perform calculations
-	double t = (double)(now - last_date) / 86400.0;
 	double nr, ns, nd;
 	if (s == 0.0) {
 		nr = 1.0;
-	} else {
-		nr = fsrs_retrievability(t, s);
-	}
-	if (s == 0.0) {
 		ns = fsrs_s_0(grade);
-	} else {
-		ns = fsrs_stability(nr, s, d, grade);
-	}
-	if (d == 0.0) {
 		nd = fsrs_d_0(grade);
 	} else {
+		double t = (double)(now - last_date) / 86400.0;
+		nr = fsrs_retrievability(t, s);
+		ns = fsrs_stability(nr, s, d, grade);
 		nd = fsrs_difficulty(d, grade);
 	}
 	double interval = fsrs_interval(0.9, ns);
+	double due_date = now + interval * 86400.0;
 
 	// Update values
 	if (sqlite3_prepare_v2(db, "UPDATE scheduler SET last_date = ?, due_date = ?, r = ?, s = ?, d = ? WHERE path = ?;", -1, &stmt, NULL ) != SQLITE_OK) {
 		return APP_ERR_INTERNAL;
 	}
 	sqlite3_bind_int64(stmt, 1, now);
-	sqlite3_bind_int64(stmt, 2, now + interval);
+	sqlite3_bind_int64(stmt, 2, due_date);
 	sqlite3_bind_double(stmt, 3, nr);
 	sqlite3_bind_double(stmt, 4, ns);
 	sqlite3_bind_double(stmt, 5, nd);
@@ -470,33 +464,80 @@ int app_create(AppState *s, const char *path) {
 }
 
 int app_ls(AppState *s) {
+	// Open SQL
+	sqlite3 *db;
+	if (sqlite3_open("scheduler.db", &db) != SQLITE_OK) {
+		return APP_ERR_INTERNAL;
+	}
+
+	// Register SQL entries
+	int result = app_sync_scheduler_entries(s, db);
+	if (result) {
+		goto app_ls_cleanup_db;
+	}
+
+	// Prepare statement
+	sqlite3_stmt *stmt;
+
+	if (sqlite3_prepare_v2(db, "SELECT due_date FROM scheduler WHERE path = ?;", -1, &stmt, NULL) != SQLITE_OK) {
+		result = APP_ERR_INTERNAL;
+		goto app_ls_cleanup_db;
+	}
+
+	// List files and directories
 	struct _finddata_t data;
 	char pattern[MAX_PATH];
 	char path[MAX_PATH];
-
 	strcpy(pattern, s->path);
 	strcat(pattern, "\\*");
 	intptr_t handle = _findfirst(pattern, &data);
 	if (handle == -1) {
-		return APP_ERR_INTERNAL;
-	}
-	do {
+		result = APP_ERR_INTERNAL;
+		goto app_ls_cleanup_stmt;
+	} do {
 		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
 			continue;
 		}
 		strcpy(path, s->path);
-		strcat(path, "\\");
+		strcat(path, "/");
 		strcat(path, data.name);
 		if ((data.attrib & _A_SUBDIR)) {
 			printf("%s/\n", data.name);
 		} else {
+			sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+			int step_result = sqlite3_step(stmt);
+			if (step_result != SQLITE_ROW) {
+				result = APP_ERR_INTERNAL;
+				break;
+			}
+			long due_date = (long)sqlite3_column_int64(stmt, 0);
+			sqlite3_reset(stmt);
+			sqlite3_clear_bindings(stmt);
+
 			FILE *file = fopen(path, "r");
-			printf("%s\t", data.name);
+			if (!file) {
+				result = APP_ERR_INTERNAL;
+				break;
+			}
+			long seconds = due_date - time(NULL);
+			printf("%s (in %.1f d)\t", data.name, seconds / 84600.0);
 			print_file(file);
 			fclose(file);
 		}
 	} while (_findnext(handle, &data) == 0);
-	return 0;
+
+	// Close handle
+app_ls_cleanup_handle:
+	_findclose(handle);
+
+	// Finalize stmt
+app_ls_cleanup_stmt:
+	sqlite3_finalize(stmt);
+
+	// Close SQL
+app_ls_cleanup_db:
+	sqlite3_close(db);
+	return result;
 }
 
 // How study works:

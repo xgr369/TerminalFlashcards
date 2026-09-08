@@ -1,6 +1,9 @@
 #ifndef CORE_H
 #define CORE_H
 
+#define APP_ERR_INTERNAL 1
+#define APP_ERR_DIR_NOTFOUND 2
+
 typedef struct {
 	char *path;
 } AppState;
