@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 #define str_eq_len_lit(str, len, l) ((len) == sizeof(l) - 1 && strncmp((str), (l), sizeof(l) - 1) == 0)
-#if false
+#if _DEBUG
 #define debug(fmt, ...) do { \
 	printf("debug -- " fmt, __VA_ARGS__); \
 } while (0)
