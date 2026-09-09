@@ -519,8 +519,16 @@ int app_ls(AppState *s) {
 				result = APP_ERR_INTERNAL;
 				break;
 			}
-			long seconds = due_date - time(NULL);
-			printf("%s (in %.1f d)\t", data.name, seconds / 84600.0);
+			if (due_date == 0.0) {
+				printf("%s (new)\t", data.name);
+			} else {
+				long seconds = due_date - time(NULL);
+				if (seconds < 0.0) {
+					printf("%s (due)\t", data.name);
+				} else {
+					printf("%s (in %.1f d)\t", data.name, seconds / 84600.0);
+				}
+			}
 			print_file(file);
 			fclose(file);
 		}
