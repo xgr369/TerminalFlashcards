@@ -31,6 +31,7 @@ int print_file(FILE *file) {
         printf("%s", buffer);
     }
     putchar('\n');
+    return 0;
 }
 
 #include <io.h> 

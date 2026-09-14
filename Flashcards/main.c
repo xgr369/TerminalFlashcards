@@ -7,7 +7,7 @@
 #define check_command(str, l) (((str)[sizeof(l) - 1] == '\0' || (str)[sizeof(l) - 1] == ' ') && strncmp((str), (l), sizeof(l) - 1) == 0)
 #define get_argument(str, l) ((str)[sizeof(l) - 1] == '\0' ? NULL : (str) + sizeof(l))
 
-int exec_line(AppState *s, char *line) {
+static int exec_line(AppState *s, char *line) {
     if (line[0] == '\0') {
         return 0;
 	}
@@ -80,9 +80,12 @@ exec_line_err_internal:
 }
 
 int main(int argc, char **argv) {
-    printf("Flashcard Application\n");
     AppState state;
-    app_init(&state);
+    if (app_init(&state)) {
+        printf("Failed to launch application.");
+        return APP_ERR_INTERNAL;
+    }
+    printf("Flashcard Application\n");
     for (;;) {
         printf("%s>", state.path);
 		char *line = read_line();
@@ -95,4 +98,5 @@ int main(int argc, char **argv) {
             break;
 		}
     }
+    return 0;
 }

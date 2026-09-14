@@ -27,7 +27,7 @@ static int app_collect_files(const char *dir, char ***files, size_t *count) {
 	strcat(pattern, "\\*");
 	intptr_t handle = _findfirst(pattern, &data);
 	if (handle == -1) {
-		return APP_ERR_INTERNAL;
+		return errno == ENOENT ? 0 : APP_ERR_INTERNAL;
 	}
 	do {
 		if (strcmp(data.name, ".") == 0 || strcmp(data.name, "..") == 0) {
@@ -159,7 +159,7 @@ static char *app_parse_path(AppState *s, const char *path) {
 
 	char *real_path = malloc(root_len + 1 + path_len + 1);
 	if (!real_path) {
-		return APP_ERR_INTERNAL;
+		return NULL;
 	}
 	char *p = real_path;
 	memcpy(p, s->path, root_len);
@@ -196,10 +196,10 @@ static char *app_parse_path(AppState *s, const char *path) {
 		p--;
 	}
 	*p++ = '\0';
-	const char *new_real_path = realloc(real_path, p - real_path);
+	char *new_real_path = realloc(real_path, p - real_path);
 	if (!new_real_path) {
 		free(real_path);
-		return APP_ERR_INTERNAL;
+		return NULL;
 	}
 	return new_real_path;
 }
@@ -275,11 +275,11 @@ static void app_print_dir_recursive(const char *path, int depth, int *last) {
 static int app_prompt_grade(sqlite3 *db, const char *path, int *stop) {
 	printf("Grade 1-4: ");
 	for (;;) {
-		const char *line = read_line();
+		char *line = read_line();
 		if (!line) {
 			return APP_ERR_INTERNAL;
 		}
-		int len = strlen(line);
+		size_t len = strlen(line);
 		if (len == 0) {
 			*stop = 1;
 			break;
@@ -306,12 +306,13 @@ static int app_sync_scheduler_entries(AppState *s, sqlite3 *db) {
 	if (result) {
 		return result;
 	}
+	// Ensure scheduler table exists
+	if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS scheduler (path TEXT PRIMARY KEY, last_date INTEGER NOT NULL, due_date INTEGER NOT NULL, r REAL NOT NULL, s REAL NOT NULL, d REAL NOT NULL);", NULL, NULL, NULL) != SQLITE_OK) {
+		result = APP_ERR_INTERNAL;
+		goto app_sync_scheduler_entries_cleanup_files;
+	}
 	if (file_count) {
 		// Ensure each file has an entry in the database
-		if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS scheduler (path TEXT PRIMARY KEY, last_date INTEGER NOT NULL, due_date INTEGER NOT NULL, r REAL NOT NULL, s REAL NOT NULL, d REAL NOT NULL);", NULL, NULL, NULL) != SQLITE_OK) {
-			result = APP_ERR_INTERNAL;
-			goto app_sync_scheduler_entries_cleanup_files;
-		}
 		sqlite3_stmt *stmt;
 		if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO scheduler (path, last_date, due_date, r, s, d) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmt, NULL) != SQLITE_OK) {
 			result = APP_ERR_INTERNAL;
@@ -336,13 +337,14 @@ static int app_sync_scheduler_entries(AppState *s, sqlite3 *db) {
 		// Free stmt
 	app_sync_scheduler_entries_cleanup_stmt:
 		sqlite3_finalize(stmt);
+
+		// Free collected files
+	app_sync_scheduler_entries_cleanup_files:
+		for (size_t i = 0; i < file_count; i++) {
+			free(files[i]);
+		}
+		free(files);
 	}
-	// Free collected files
-app_sync_scheduler_entries_cleanup_files:
-	for (size_t i = 0; i < file_count; i++) {
-		free(files[i]);
-	}
-	free(files);
 	return result;
 }
 
@@ -417,7 +419,10 @@ int app_add(AppState *s, const char *content) {
 }
 
 int app_cd(AppState *s, const char *path) {
-	const char *real_path = app_parse_path(s, path);
+	char *real_path = app_parse_path(s, path);
+	if (!real_path) {
+		return APP_ERR_INTERNAL;
+	}
 	if (!dir_exists(real_path)) {
 		free(real_path);
 		return APP_ERR_DIR_NOTFOUND;
@@ -466,7 +471,7 @@ int app_create(AppState *s, const char *path) {
 int app_ls(AppState *s) {
 	// Open SQL
 	sqlite3 *db;
-	if (sqlite3_open("scheduler.db", &db) != SQLITE_OK) {
+	if (sqlite3_open_v2("scheduler.db", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
 		return APP_ERR_INTERNAL;
 	}
 
@@ -478,7 +483,6 @@ int app_ls(AppState *s) {
 
 	// Prepare statement
 	sqlite3_stmt *stmt;
-
 	if (sqlite3_prepare_v2(db, "SELECT due_date FROM scheduler WHERE path = ?;", -1, &stmt, NULL) != SQLITE_OK) {
 		result = APP_ERR_INTERNAL;
 		goto app_ls_cleanup_db;
@@ -535,7 +539,6 @@ int app_ls(AppState *s) {
 	} while (_findnext(handle, &data) == 0);
 
 	// Close handle
-app_ls_cleanup_handle:
 	_findclose(handle);
 
 	// Finalize stmt
@@ -559,7 +562,7 @@ app_ls_cleanup_db:
 int app_study(AppState *s) {
 	// Open SQL
 	sqlite3 *db;
-	if (sqlite3_open("scheduler.db", &db) != SQLITE_OK) {
+	if (sqlite3_open_v2("scheduler.db", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
 		return APP_ERR_INTERNAL;
 	}
 
@@ -652,5 +655,8 @@ void app_tree(const char *path) {
 
 int app_init(AppState *s) {
 	s->path = BASE_PATH;
+	if (_mkdir(s->path) != 0 && errno != EEXIST) {
+		return APP_ERR_INTERNAL;
+	}
 	return 0;
 }
